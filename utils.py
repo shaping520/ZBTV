@@ -147,8 +147,9 @@ def getUrlInfo(result, channel_name):
 async def check_stream_speed(url_info):
     try:
         is_v6 = is_ipv6(url_info[0])
-        if is_v6 and os.getenv("ipv6_proxy"):
-            url = os.getenv("ipv6_proxy") + quote(url_info[0])
+        if is_v6 and (os.getenv("ipv6_proxy") or config.ipv6_proxy):
+            proxy = config.ipv6_proxy if config.ipv6_proxy else os.getenv("ipv6_proxy")
+            url = proxy + quote(url_info[0])
             response = requests.get(url)
             if response.status_code == 200:
                 if not url_info[2]:
@@ -195,6 +196,8 @@ async def compareSpeedAndResolution(infoList):
     """
     Sort by speed and resolution
     """
+    if not infoList:
+        return None
     response_times = await asyncio.gather(*[getSpeed(url_info) for url_info in infoList])
     valid_responses = [
         (info, rt) for info, rt in zip(infoList, response_times) if rt != float("-inf")
@@ -243,6 +246,16 @@ def getTotalUrls(data):
         total_urls = [url for (url, _, _), _ in data[:config.zb_urls_limit]]
     else:
         total_urls = [url for (url, _, _), _ in data]
+    return list(dict.fromkeys(total_urls))
+
+
+def getTotalUrlsFromInfoList(infoList):
+    """
+    Get the total urls from info list
+    """
+    total_urls = [
+        url for url, _, _ in infoList[: min(len(infoList), config.zb_urls_limit)]
+    ]
     return list(dict.fromkeys(total_urls))
 
 
@@ -436,8 +449,13 @@ def get_zubao_source_ip(result_div):
         return None
     if "存活" not in str(result_div):
         return None
-    return a_elems[0].get_text(strip=True)
-
+    pattern = r'\b((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d{1,5})?|(?:\d{1,3}\.){1,3}\d{1,3}(?::\d{1,5})?)\b'
+    # 使用 re.search() 查找第一个匹配的字符串
+    match = re.search(pattern, a_elems[0].get_text(strip=True))
+    if match:
+        return match.group(0)
+    return None
+    
 
 async def ffmpeg_url(url, timeout, cmd='ffmpeg'):
     args = [cmd, '-t', str(timeout), '-stats', '-i', url, '-f', 'null', '-']
@@ -469,6 +487,7 @@ async def ffmpeg_url(url, timeout, cmd='ffmpeg'):
     finally:
         if proc:
             await proc.wait()  # 等待子进程结束
+        # print(res)
         return res
 
 
@@ -484,3 +503,42 @@ def analyse_video_info(video_info):
         if match:
             resolution = match.group(0)
     return frame_size, resolution
+
+
+def find_matching_values(dictionary, partial_key):
+    # 遍历字典键并找到包含部分字符串的键
+    result = []
+    matching_keys = []
+    for key in dictionary:
+        if partial_key not in key:
+            continue
+        if not key.replace(partial_key, ""):
+            matching_keys.append(key)
+        elif key.replace(partial_key, "") in config.search_ignore_key:
+            matching_keys.append(key)
+    if not matching_keys:
+        return None
+    for m_key in matching_keys:
+        result += dictionary[m_key]
+    return result
+
+
+def kaisu_upload(token, file_path, new_filename, file_id="0"):
+    url = f"https://upload.kstore.space/upload/{file_id}?access_token={token}"
+    # 打开文件并上传
+    with open(file_path, 'rb') as file:
+        if new_filename:
+            files = {'file': (new_filename, file)}
+        else:
+            files = {'file': file}
+        response = requests.post(url, files=files)
+
+    # 检查响应
+    if response.status_code == 200:
+        file_id = response.json().get("data").get("id")
+        data = {
+            "fileId": file_id,
+            "isDirect": 1
+        }
+        requests.post(f"https://api.kstore.space/api/v1/file/direct?access_token={token}", data=data)
+        print("File uploaded on kaisu successfully")
